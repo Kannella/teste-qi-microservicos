@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createPixPayment } from '@/lib/stripe'
-import { savePurchase } from '@/lib/supabase'
+import { createCustomerEmail } from '@/lib/customer-emails-db'
 
 export async function POST(request: NextRequest) {
   try {
-    const { email, testResult } = await request.json()
+    const { email, testResult, fullName, phone } = await request.json()
 
     if (!email) {
       return NextResponse.json(
@@ -24,18 +24,21 @@ export async function POST(request: NextRequest) {
     const result = await createPixPayment(paymentData)
 
     if (result.success) {
-      // Salvar a compra no banco de dados
+      // Salvar o email do comprador no banco de dados
       try {
-        await savePurchase({
+        await createCustomerEmail({
           email,
+          full_name: fullName,
+          phone,
           payment_method: 'pix',
+          payment_amount: 5.00,
           payment_status: 'pending',
-          stripe_payment_intent_id: result.paymentId,
-          amount: 500,
-          test_result: testResult
+          stripe_payment_id: result.paymentId,
+          test_score: testResult?.score,
+          email_sent: false
         })
       } catch (dbError) {
-        console.error('Erro ao salvar no banco:', dbError)
+        console.error('Erro ao salvar email do comprador:', dbError)
         // Continua mesmo se falhar ao salvar no banco
       }
 
