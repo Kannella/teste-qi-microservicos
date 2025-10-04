@@ -6,88 +6,140 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { ArrowLeft, CheckCircle, Copy, RefreshCw, Clock, Smartphone } from 'lucide-react'
+import { ArrowLeft, CheckCircle, Copy, RefreshCw, Clock, Smartphone, AlertCircle } from 'lucide-react'
 import QRCode from 'qrcode'
+
+interface PaymentData {
+  pixCode: string
+  qrCode?: string
+  expiresAt: string
+  paymentId: string
+  isManual?: boolean
+}
 
 export default function PixPayment() {
   const searchParams = useSearchParams()
   const router = useRouter()
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [qrCodeUrl, setQrCodeUrl] = useState('')
-  const [pixCode, setPixCode] = useState('')
+  const [paymentData, setPaymentData] = useState<PaymentData | null>(null)
   const [copied, setCopied] = useState(false)
   const [timeLeft, setTimeLeft] = useState(15 * 60) // 15 minutos
-  const [paymentStatus, setPaymentStatus] = useState<'pending' | 'checking' | 'approved' | 'expired'>('pending')
+  const [paymentStatus, setPaymentStatus] = useState<'pending' | 'checking' | 'approved' | 'expired' | 'failed'>('pending')
   const [email, setEmail] = useState(searchParams.get('email') || '')
+  const [testResult] = useState(() => {
+    const stored = localStorage.getItem('testResult')
+    return stored ? JSON.parse(stored) : null
+  })
 
-  // Simular geração do PIX
+  // Inicializar pagamento PIX via Stripe
   useEffect(() => {
-    generatePixPayment()
-  }, [])
+    if (email && testResult) {
+      initializePixPayment()
+    }
+  }, [email, testResult])
 
   // Timer para expiração
   useEffect(() => {
-    if (timeLeft > 0 && paymentStatus === 'pending') {
+    if (timeLeft > 0 && paymentStatus === 'pending' && paymentData) {
       const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000)
       return () => clearTimeout(timer)
     } else if (timeLeft === 0) {
       setPaymentStatus('expired')
     }
-  }, [timeLeft, paymentStatus])
+  }, [timeLeft, paymentStatus, paymentData])
 
-  // Simular verificação de pagamento
+  // Verificação automática de pagamento
   useEffect(() => {
-    if (paymentStatus === 'pending') {
-      const checkPayment = setInterval(() => {
-        // Simular 10% de chance de pagamento aprovado a cada 5 segundos
-        if (Math.random() > 0.9) {
-          setPaymentStatus('approved')
-          clearInterval(checkPayment)
+    if (paymentStatus === 'pending' && paymentData?.paymentId) {
+      const checkPayment = setInterval(async () => {
+        try {
+          const response = await fetch(`/api/payment/status?paymentId=${paymentData.paymentId}`)
+          const result = await response.json()
           
-          // Redirecionar para sucesso após 2 segundos
-          setTimeout(() => {
-            router.push(`/payment/success?email=${encodeURIComponent(email)}&method=pix`)
-          }, 2000)
+          if (result.success && result.status === 'succeeded') {
+            setPaymentStatus('approved')
+            clearInterval(checkPayment)
+            
+            // Redirecionar para sucesso após 2 segundos
+            setTimeout(() => {
+              router.push(`/payment/success?email=${encodeURIComponent(email)}&method=pix`)
+            }, 2000)
+          }
+        } catch (error) {
+          console.error('Erro ao verificar pagamento:', error)
         }
-      }, 5000)
+      }, 5000) // Verificar a cada 5 segundos
 
       return () => clearInterval(checkPayment)
     }
-  }, [paymentStatus, email, router])
+  }, [paymentStatus, paymentData, email, router])
 
-  const generatePixPayment = async () => {
+  const initializePixPayment = async () => {
     setLoading(true)
     
     try {
-      // Simular geração do código PIX
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      
-      // Código PIX simulado (em produção, viria da API do Stripe ou outro provedor)
-      const mockPixCode = '00020126580014BR.GOV.BCB.PIX013636c4b8c4-4c4c-4c4c-4c4c-4c4c4c4c4c4c5204000053039865802BR5925TESTE QI PROFISSIONAL6009SAO PAULO62070503***6304' + Math.random().toString(36).substring(2, 6).toUpperCase()
-      
-      setPixCode(mockPixCode)
-      
-      // Gerar QR Code
-      const qrUrl = await QRCode.toDataURL(mockPixCode, {
-        width: 300,
-        margin: 2,
-        color: {
-          dark: '#000000',
-          light: '#FFFFFF'
-        }
+      const response = await fetch('/api/payment/pix', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email,
+          testResult,
+          fullName: searchParams.get('fullName') || '',
+          phone: searchParams.get('phone') || ''
+        }),
       })
-      
-      setQrCodeUrl(qrUrl)
+
+      const result = await response.json()
+
+      if (result.success) {
+        setPaymentData({
+          pixCode: result.pixCode,
+          qrCode: result.qrCode,
+          expiresAt: result.expiresAt,
+          paymentId: result.paymentId,
+          isManual: result.isManual
+        })
+
+        // Gerar QR Code se não veio do Stripe
+        if (!result.qrCode) {
+          const qrUrl = await QRCode.toDataURL(result.pixCode, {
+            width: 300,
+            margin: 2,
+            color: {
+              dark: '#000000',
+              light: '#FFFFFF'
+            }
+          })
+          setQrCodeUrl(qrUrl)
+        } else {
+          setQrCodeUrl(result.qrCode)
+        }
+
+        // Calcular tempo restante
+        const expiresAt = new Date(result.expiresAt)
+        const now = new Date()
+        const timeRemaining = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000))
+        setTimeLeft(timeRemaining)
+      } else {
+        console.error('Erro ao criar pagamento PIX:', result.error)
+        setPaymentStatus('failed')
+      }
     } catch (error) {
-      console.error('Erro ao gerar PIX:', error)
+      console.error('Erro ao inicializar pagamento PIX:', error)
+      setPaymentStatus('failed')
     } finally {
       setLoading(false)
     }
   }
 
   const copyPixCode = async () => {
+    if (!paymentData?.pixCode) return
+    
     try {
-      await navigator.clipboard.writeText(pixCode)
+      await navigator.clipboard.writeText(paymentData.pixCode)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch (error) {
@@ -101,13 +153,16 @@ export default function PixPayment() {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
-  const handleManualCheck = () => {
+  const handleManualCheck = async () => {
+    if (!paymentData?.paymentId) return
+    
     setPaymentStatus('checking')
     
-    // Simular verificação manual
-    setTimeout(() => {
-      // 30% de chance de aprovação na verificação manual
-      if (Math.random() > 0.7) {
+    try {
+      const response = await fetch(`/api/payment/status?paymentId=${paymentData.paymentId}`)
+      const result = await response.json()
+      
+      if (result.success && result.status === 'succeeded') {
         setPaymentStatus('approved')
         setTimeout(() => {
           router.push(`/payment/success?email=${encodeURIComponent(email)}&method=pix`)
@@ -115,7 +170,10 @@ export default function PixPayment() {
       } else {
         setPaymentStatus('pending')
       }
-    }, 3000)
+    } catch (error) {
+      console.error('Erro na verificação manual:', error)
+      setPaymentStatus('pending')
+    }
   }
 
   if (paymentStatus === 'approved') {
@@ -142,11 +200,32 @@ export default function PixPayment() {
             <h2 className="text-2xl font-bold text-red-800 mb-2">PIX Expirado</h2>
             <p className="text-red-600 mb-6">O tempo limite para pagamento foi atingido.</p>
             <Button
-              onClick={generatePixPayment}
+              onClick={initializePixPayment}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white"
             >
               <RefreshCw className="h-4 w-4 mr-2" />
               Gerar Novo PIX
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (paymentStatus === 'failed') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-100 flex items-center justify-center p-4">
+        <Card className="w-full max-w-md">
+          <CardContent className="p-8 text-center">
+            <AlertCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-red-800 mb-2">Erro no Pagamento</h2>
+            <p className="text-red-600 mb-6">Ocorreu um erro ao processar o pagamento.</p>
+            <Button
+              onClick={initializePixPayment}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Tentar Novamente
             </Button>
           </CardContent>
         </Card>
@@ -170,13 +249,15 @@ export default function PixPayment() {
         </div>
 
         {/* Timer */}
-        <Card className="mb-6 bg-gradient-to-r from-green-500 to-blue-500 text-white">
-          <CardContent className="p-4 text-center">
-            <Clock className="h-6 w-6 mx-auto mb-2" />
-            <p className="text-sm opacity-90">Tempo restante para pagamento</p>
-            <p className="text-2xl font-bold">{formatTime(timeLeft)}</p>
-          </CardContent>
-        </Card>
+        {paymentData && (
+          <Card className="mb-6 bg-gradient-to-r from-green-500 to-blue-500 text-white">
+            <CardContent className="p-4 text-center">
+              <Clock className="h-6 w-6 mx-auto mb-2" />
+              <p className="text-sm opacity-90">Tempo restante para pagamento</p>
+              <p className="text-2xl font-bold">{formatTime(timeLeft)}</p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Email */}
         <Card className="mb-6">
@@ -189,6 +270,7 @@ export default function PixPayment() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="seu@email.com"
               className="mt-1"
+              disabled={!!paymentData}
             />
           </CardContent>
         </Card>
@@ -198,7 +280,7 @@ export default function PixPayment() {
           <CardHeader className="bg-gradient-to-r from-green-600 to-blue-600 text-white rounded-t-lg">
             <CardTitle className="flex items-center text-center">
               <Smartphone className="h-6 w-6 mr-2" />
-              Escaneie o QR Code
+              {paymentData?.isManual ? 'PIX Manual' : 'PIX via Stripe'}
             </CardTitle>
           </CardHeader>
           
@@ -206,9 +288,9 @@ export default function PixPayment() {
             {loading ? (
               <div className="text-center">
                 <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-green-500 mx-auto mb-4"></div>
-                <p className="text-gray-600">Gerando PIX...</p>
+                <p className="text-gray-600">Gerando PIX via Stripe...</p>
               </div>
-            ) : (
+            ) : paymentData ? (
               <div className="text-center">
                 <div className="bg-white p-4 rounded-lg inline-block mb-4">
                   <img src={qrCodeUrl} alt="QR Code PIX" className="w-64 h-64" />
@@ -228,12 +310,16 @@ export default function PixPayment() {
                   </ol>
                 </div>
               </div>
+            ) : (
+              <div className="text-center">
+                <p className="text-gray-600">Configure seu email para gerar o PIX</p>
+              </div>
             )}
           </CardContent>
         </Card>
 
         {/* Código PIX */}
-        {!loading && (
+        {paymentData && (
           <Card className="mb-6">
             <CardHeader>
               <CardTitle className="text-lg">Ou copie o código PIX</CardTitle>
@@ -241,7 +327,7 @@ export default function PixPayment() {
             <CardContent className="p-4">
               <div className="bg-gray-50 p-3 rounded-lg mb-3">
                 <p className="text-xs text-gray-600 font-mono break-all">
-                  {pixCode}
+                  {paymentData.pixCode}
                 </p>
               </div>
               <Button
@@ -272,35 +358,49 @@ export default function PixPayment() {
         </Card>
 
         {/* Verificação Manual */}
-        <Button
-          onClick={handleManualCheck}
-          disabled={paymentStatus === 'checking'}
-          variant="outline"
-          className="w-full mb-4"
-        >
-          {paymentStatus === 'checking' ? (
-            <div className="flex items-center">
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2"></div>
-              Verificando...
-            </div>
-          ) : (
-            <div className="flex items-center">
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Já paguei - Verificar
-            </div>
-          )}
-        </Button>
+        {paymentData && (
+          <Button
+            onClick={handleManualCheck}
+            disabled={paymentStatus === 'checking'}
+            variant="outline"
+            className="w-full mb-4"
+          >
+            {paymentStatus === 'checking' ? (
+              <div className="flex items-center">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2"></div>
+                Verificando no Stripe...
+              </div>
+            ) : (
+              <div className="flex items-center">
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Já paguei - Verificar
+              </div>
+            )}
+          </Button>
+        )}
 
         {/* Status */}
-        <div className="text-center">
-          <div className="flex items-center justify-center text-sm text-gray-500 mb-2">
-            <div className="animate-pulse w-2 h-2 bg-green-500 rounded-full mr-2"></div>
-            Aguardando pagamento...
+        {paymentData && (
+          <div className="text-center">
+            <div className="flex items-center justify-center text-sm text-gray-500 mb-2">
+              <div className="animate-pulse w-2 h-2 bg-green-500 rounded-full mr-2"></div>
+              {paymentData.isManual ? 'Aguardando confirmação manual...' : 'Monitorando pagamento via Stripe...'}
+            </div>
+            <p className="text-xs text-gray-400">
+              O pagamento será detectado automaticamente
+            </p>
           </div>
-          <p className="text-xs text-gray-400">
-            O pagamento será detectado automaticamente
-          </p>
-        </div>
+        )}
+
+        {/* Botão para inicializar se não tiver dados */}
+        {!paymentData && !loading && email && testResult && (
+          <Button
+            onClick={initializePixPayment}
+            className="w-full bg-green-600 hover:bg-green-700 text-white"
+          >
+            Gerar PIX via Stripe
+          </Button>
+        )}
       </div>
     </div>
   )
