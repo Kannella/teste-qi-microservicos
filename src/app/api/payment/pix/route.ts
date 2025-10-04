@@ -47,7 +47,8 @@ export async function POST(request: NextRequest) {
         pixCode: result.pixCode,
         qrCode: result.qrCode,
         expiresAt: result.expiresAt,
-        paymentId: result.paymentId
+        paymentId: result.paymentId,
+        isManual: result.isManual || false
       })
     } else {
       return NextResponse.json(
