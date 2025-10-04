@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { checkPaymentStatus } from '@/lib/stripe'
-import { updatePaymentStatus } from '@/lib/supabase'
+import { getCustomerByPaymentId } from '@/lib/customer-emails-db'
 
 export async function GET(request: NextRequest) {
   try {
@@ -14,28 +14,21 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const result = await checkPaymentStatus(paymentId)
-
-    // Atualizar status no banco de dados se o pagamento foi concluído
-    if (result.status === 'succeeded') {
-      try {
-        await updatePaymentStatus(paymentId, 'completed')
-      } catch (dbError) {
-        console.error('Erro ao atualizar status no banco:', dbError)
-        // Continua mesmo se falhar ao atualizar no banco
-      }
-    } else if (result.status === 'failed' || result.status === 'canceled') {
-      try {
-        await updatePaymentStatus(paymentId, 'failed')
-      } catch (dbError) {
-        console.error('Erro ao atualizar status no banco:', dbError)
-        // Continua mesmo se falhar ao atualizar no banco
-      }
-    }
+    // Verificar status no Stripe
+    const paymentStatus = await checkPaymentStatus(paymentId)
+    
+    // Verificar no banco de dados local
+    const customer = await getCustomerByPaymentId(paymentId)
 
     return NextResponse.json({
-      status: result.status,
-      paymentId: result.paymentId
+      success: true,
+      status: paymentStatus.status,
+      paymentId,
+      customer: customer ? {
+        email: customer.email,
+        paymentStatus: customer.payment_status,
+        emailSent: customer.email_sent
+      } : null
     })
   } catch (error) {
     console.error('Erro ao verificar pagamento:', error)
