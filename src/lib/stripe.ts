@@ -21,27 +21,58 @@ export interface CardPaymentData extends PaymentData {
   cardToken: string
 }
 
-// Criar pagamento PIX
+// Criar pagamento PIX usando Stripe
 export async function createPixPayment(data: PixPaymentData) {
   try {
-    // No Stripe, PIX ainda não está disponível diretamente
-    // Você pode usar outros provedores como Mercado Pago, PagSeguro, etc.
-    
-    // Simulação de resposta PIX
-    const pixCode = generateMockPixCode()
-    
+    // Criar Payment Intent no Stripe para PIX
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: data.amount,
+      currency: data.currency,
+      description: data.description,
+      receipt_email: data.email,
+      payment_method_types: ['pix'], // Stripe suporta PIX no Brasil
+      metadata: {
+        email: data.email,
+        product: 'teste-qi',
+        method: 'pix'
+      }
+    })
+
+    // Confirmar o Payment Intent para gerar o código PIX
+    const confirmedPayment = await stripe.paymentIntents.confirm(paymentIntent.id, {
+      payment_method: {
+        type: 'pix',
+      },
+      return_url: `${process.env.NEXT_PUBLIC_BASE_URL}/payment/success`
+    })
+
+    // Extrair dados do PIX da resposta do Stripe
+    const pixData = confirmedPayment.next_action?.pix_display_qr_code
+
+    if (!pixData) {
+      throw new Error('Falha ao gerar código PIX')
+    }
+
     return {
       success: true,
-      pixCode,
-      qrCode: `data:image/png;base64,${generateMockQRCode()}`,
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 minutos
-      paymentId: `pix_${Date.now()}`
+      pixCode: pixData.data,
+      qrCode: pixData.image_url_png,
+      expiresAt: new Date(pixData.expires_at * 1000),
+      paymentId: paymentIntent.id
     }
   } catch (error) {
     console.error('Erro ao criar pagamento PIX:', error)
+    
+    // Fallback para código PIX manual se Stripe falhar
+    const fallbackPixCode = '00020126360014br.gov.bcb.pix0114+551197661735052040000530398654045.005802BR5925GIOVANNI DE AQUINO CANELL6009SAO PAULO62450507TesteQI50300017br.gov.bcb.brcode01051.0.06304D924'
+    
     return {
-      success: false,
-      error: 'Erro ao processar pagamento PIX'
+      success: true,
+      pixCode: fallbackPixCode,
+      qrCode: null, // Será gerado no frontend
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000), // 15 minutos
+      paymentId: `manual_pix_${Date.now()}`,
+      isManual: true
     }
   }
 }
@@ -74,23 +105,25 @@ export async function createCardPayment(data: CardPaymentData) {
   }
 }
 
-// Verificar status do pagamento
+// Verificar status do pagamento no Stripe
 export async function checkPaymentStatus(paymentId: string) {
   try {
-    if (paymentId.startsWith('pix_')) {
-      // Simulação de verificação PIX
-      // Em produção, você consultaria a API do provedor PIX
+    if (paymentId.startsWith('manual_pix_')) {
+      // Para PIX manual, sempre retorna pending até webhook confirmar
       return {
-        status: Math.random() > 0.8 ? 'paid' : 'pending',
+        status: 'pending',
         paymentId
       }
-    } else {
-      // Verificar pagamento Stripe
-      const paymentIntent = await stripe.paymentIntents.retrieve(paymentId)
-      return {
-        status: paymentIntent.status,
-        paymentId
-      }
+    }
+
+    // Verificar pagamento no Stripe
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentId)
+    
+    return {
+      status: paymentIntent.status,
+      paymentId,
+      amount: paymentIntent.amount,
+      currency: paymentIntent.currency
     }
   } catch (error) {
     console.error('Erro ao verificar pagamento:', error)
@@ -99,19 +132,6 @@ export async function checkPaymentStatus(paymentId: string) {
       paymentId
     }
   }
-}
-
-// Funções auxiliares para simulação PIX
-function generateMockPixCode(): string {
-  const timestamp = Date.now().toString()
-  const random = Math.random().toString(36).substring(2, 8).toUpperCase()
-  
-  return `00020126580014BR.GOV.BCB.PIX013636c4b8c4-4c4c-4c4c-4c4c-4c4c4c4c4c4c5204000053039865802BR5925TESTE QI PROFISSIONAL6009SAO PAULO62070503***6304${random}`
-}
-
-function generateMockQRCode(): string {
-  // Base64 de um QR code simples (em produção, use uma biblioteca real)
-  return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 }
 
 export default stripe
